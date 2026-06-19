@@ -1,0 +1,22 @@
+[project]
+name = "global-analytics"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.4.1",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.3",
+    "pydantic-ai>=1.107.0",
+    "pydantic-settings>=2.14.1",
+    "python-levenshtein>=0.27.3",
+    "scikit-learn>=1.9.0",
+    "seaborn>=0.13.2",
+    "spacy>=3.8.14",
+    "thefuzz>=0.22.1",
+    "xlrd>=2.0.2",
+]
+
+[project.scripts]
+depara = "depara.cli:cli"

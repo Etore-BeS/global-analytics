@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "id": "paracetamol_500_comprimido",
+      "input": "paracetamol 500 mg comprimido",
+      "expected": {
+        "medication_normalized_contains": "paracetamol",
+        "form_normalized_contains": "comprimido",
+        "route_normalized": "vo",
+        "hash_length": 64,
+        "skipped": false
+      }
+    },
+    {
+      "id": "paracetamol_cx50",
+      "input": "paracetamol 500 mg comprimido cx c/50",
+      "same_hash_as": "paracetamol_500_comprimido"
+    },
+    {
+      "id": "paracetamol_cx100",
+      "input": "paracetamol 500 mg comprimido cx c/100",
+      "same_hash_as": "paracetamol_500_comprimido"
+    },
+    {
+      "id": "dose_100mg_4ml",
+      "input": "medicamento 100 mg/4 ml sol inj",
+      "expected": {
+        "skipped": false,
+        "hash_length": 64
+      }
+    },
+    {
+      "id": "dose_50mg_4ml",
+      "input": "medicamento 50 mg/4 ml sol inj",
+      "expected": {
+        "skipped": false,
+        "hash_length": 64,
+        "different_hash_from": "dose_100mg_4ml"
+      }
+    },
+    {
+      "id": "bevacizumabe_4ml",
+      "input": "BEVACIZUMABE 25 MG/ML SOL DIL INFUS IV CT FA VD TRANS X 4 ML",
+      "expected": {
+        "skipped": false,
+        "hash_length": 64
+      },
+      "note": "L2 espera hash diferente de 16ml; ray-dw pode colapsar — documentar no teste"
+    },
+    {
+      "id": "bevacizumabe_16ml",
+      "input": "BEVACIZUMABE 25 MG/ML SOL DIL INFUS IV CT FA VD TRANS X 16 ML",
+      "expected": {
+        "skipped": false,
+        "hash_length": 64
+      }
+    },
+    {
+      "id": "blacklist_pcdt",
+      "input": "nao preconiza medicamentos",
+      "expected": {
+        "skipped": true
+      }
+    },
+    {
+      "id": "empty_text",
+      "input": "",
+      "expected": {
+        "skipped": true
+      }
+    }
+  ],
+  "golden_hashes": {
+    "paracetamol_500_comprimido": "b29d1501c8a4ab5f8016067735077d0f681b444aa2578a22fb70452749e3c1bc",
+    "bevacizumabe_4ml": "9aa3cd1b1f2409e9030bceb587b742e4e8a683bdddab8f55b91b18990bfa5d88"
+  }
+}

@@ -1,0 +1,15 @@
+# Base completa — matches em fase1_llm_matches.csv (merge incremental).
+side_a:
+  path: data/depara-unimed/global_df.csv
+  template: global_purchases
+  catalog_enrichment: data/depara-unimed/BASE_LINHA_PRODUTOS.csv
+side_b:
+  path: data/depara-unimed/Curva ABC - CD 05.26.xlsx
+  template: unimed_abc
+match:
+  run_all: true
+  use_cache: true
+  # sem limit → processa só linhas pendentes (merge no matches_path)
+output_dir: exports/run_full
+fase1_path: data/depara-unimed/fase1_comparison.csv
+matches_path: data/depara-unimed/fase1_llm_matches.csv

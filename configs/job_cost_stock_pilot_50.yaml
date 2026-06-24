@@ -1,0 +1,14 @@
+# Piloto: 50 linhas com base custo/estoque — isolado do matches principal.
+side_a:
+  path: data/depara-unimed/Base_PRODUTOS_CUSTO_ESTOQUE_23062026.csv
+  template: global_cost_stock
+side_b:
+  path: data/depara-unimed/Curva ABC - CD 05.26.xlsx
+  template: unimed_abc
+match:
+  limit: 50
+  run_all: true
+  use_cache: true
+output_dir: exports/run_cost_stock_pilot_50
+fase1_path: data/depara-unimed/fase1_comparison.csv
+matches_path: exports/run_cost_stock_pilot_50/matches.csv

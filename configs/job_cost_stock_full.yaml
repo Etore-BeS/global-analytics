@@ -1,0 +1,13 @@
+# Job completo: base custo/estoque + match LLM incremental (merge em fase1_llm_matches.csv).
+side_a:
+  path: data/depara-unimed/Base_PRODUTOS_CUSTO_ESTOQUE_23062026.csv
+  template: global_cost_stock
+side_b:
+  path: data/depara-unimed/Curva ABC - CD 05.26.xlsx
+  template: unimed_abc
+match:
+  run_all: true
+  use_cache: true
+output_dir: exports/run_cost_stock_full
+fase1_path: data/depara-unimed/fase1_comparison.csv
+matches_path: data/depara-unimed/fase1_llm_matches.csv

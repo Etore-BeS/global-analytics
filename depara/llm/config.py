@@ -43,6 +43,10 @@ class DeparaLLMSettings(BaseSettings):
             "DEPARA_UNIMED_PATH",
         ),
     )
+    global_catalog_path: Path | None = Field(
+        default=Path("data/depara-unimed/BASE_LINHA_PRODUTOS.csv"),
+        validation_alias=AliasChoices("DEPARA_GLOBAL_CATALOG_PATH"),
+    )
     unimed_catalogo_path: Path = Field(
         default=Path("data/depara-unimed/Curva ABC - CD 05.26.xlsx"),
         validation_alias=AliasChoices(

@@ -134,3 +134,11 @@ class MatchRecord(BaseModel):
     cached: bool = False
     error: str | None = None
     run_pass: str = "initial"
+    source_medication_hash_id: str | None = None
+    target_medication_hash_id: str | None = None
+    hash_match_signal: bool = False
+    fuzzy_alta_signal: bool = False
+    preco_ok_signal: bool = False
+    review_passed: bool = False
+    review_flags: list[str] = Field(default_factory=list)
+    match_stage: str = "agent"

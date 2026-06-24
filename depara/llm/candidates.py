@@ -9,8 +9,8 @@ from depara.fase1_similarity import load_global_items, normalize_text
 from depara.llm.schemas import GlobalCandidate, UnimedLinhaInput
 from depara.price_sanity import DEFAULT_MAX_PRICE_RATIO, price_proximity_score
 
-# Confianças incluídas em --all (pula só alta)
-LLM_ALL_CONFIDENCA = frozenset({"media", "baixa", "revisar"})
+# Confianças incluídas em --all (todas as linhas, inclusive alta)
+LLM_ALL_CONFIDENCA = frozenset({"alta", "media", "baixa", "revisar"})
 
 _PRINCIPIO_STOP = frozenset(
     {

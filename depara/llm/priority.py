@@ -5,11 +5,24 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-
 from depara.fase1_similarity import load_global_items
 
 
 def _linha_costs(global_distribuidor_path: Path) -> pd.DataFrame:
+    from depara.fase1_similarity import detect_global_source_mode
+    from depara.price_sanity import linha_cost_stats
+
+    if detect_global_source_mode(str(global_distribuidor_path)) == "global_cost_stock":
+        stats = linha_cost_stats(global_distribuidor_path)
+        stats["linha_key"] = stats["linha_produto"].str.strip()
+        return stats.rename(
+            columns={
+                "global_custo_min": "custo_min",
+                "global_custo_mediana": "custo_medio",
+                "global_custo_max": "custo_max",
+            }
+        )[["linha_key", "linha_produto", "custo_min", "custo_medio", "custo_max"]]
+
     raw = pd.read_csv(global_distribuidor_path, encoding="latin-1")
     prod = raw.drop_duplicates(subset=["COD_PRODUTO"])
     costs = (
@@ -28,7 +41,6 @@ def _linha_costs(global_distribuidor_path: Path) -> pd.DataFrame:
 
 def assign_confidence(row: pd.Series) -> str:
     primary = row.get("fuzz_token_set", 0)
-    spacy = row.get("spacy", 0)
     score_mean = row.get("score_mean", 0)
     score_std = row.get("score_std", 0)
     cod_cols = [c for c in row.index if c.startswith("cod_item_")]

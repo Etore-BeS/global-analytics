@@ -10,10 +10,36 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-
-from depara.fase1_similarity import load_global_linhas
+from depara.contract.models import SideConfig
+from depara.fase1_similarity import detect_global_source_mode, load_global_linhas
 from depara.llm.priority import assign_confidence
 from depara.price_sanity import enrich_price_report
+
+
+def _is_snapshot_global(
+    global_compras_path: Path,
+    *,
+    side: SideConfig | None = None,
+) -> bool:
+    if side is not None and side.template == "global_cost_stock":
+        return True
+    return detect_global_source_mode(str(global_compras_path)) == "global_cost_stock"
+
+
+def _load_global_skus(
+    global_compras_path: Path,
+    *,
+    side: SideConfig | None = None,
+) -> pd.DataFrame:
+    from depara.contract.ingest import load_global_side_a
+
+    if side is not None:
+        return load_global_side_a(side)
+    if _is_snapshot_global(global_compras_path):
+        return load_global_side_a(
+            SideConfig(path=global_compras_path, template="global_cost_stock")
+        )
+    return pd.read_csv(global_compras_path, encoding="latin-1")
 
 
 def build_depara(
@@ -21,13 +47,11 @@ def build_depara(
     fase1_path: Path,
     llm_matches_path: Path,
 ) -> pd.DataFrame:
-    """Consolida depara: linha clínica Global → cod_item Unimed."""
-    fase1 = pd.read_csv(fase1_path)
-    if "confianca" not in fase1.columns:
-        fase1["confianca"] = fase1.apply(assign_confidence, axis=1)
-
+    """Consolida depara: linha clínica Global → cod_item Unimed (somente agente aprovado)."""
     llm = pd.read_csv(llm_matches_path)
     llm_ok = llm[llm["decision"] == "match"].copy()
+    if "review_passed" in llm_ok.columns:
+        llm_ok = llm_ok[llm_ok["review_passed"].fillna(True).astype(bool)]
     llm_ok["unimed_cod_item"] = pd.to_numeric(llm_ok["cod_item"], errors="coerce")
     llm_ok = llm_ok.dropna(subset=["unimed_cod_item"])
     llm_ok["unimed_cod_item"] = llm_ok["unimed_cod_item"].astype(int)
@@ -41,54 +65,89 @@ def build_depara(
             "model": "match_model",
         }
     )
-    depara["match_source"] = "llm"
+    depara["match_source"] = "agent"
 
-    alta = fase1[fase1["confianca"] == "alta"].copy()
-    alta["linha_key"] = alta["linha_produto"].str.strip()
-    alta = alta[~alta["linha_key"].isin(depara["linha_key"])]
-    alta_depara = alta[
-        ["linha_key", "linha_produto", "best_cod_item", "best_desc_global", "fuzz_token_set"]
-    ].rename(
-        columns={
-            "best_cod_item": "unimed_cod_item",
-            "best_desc_global": "desc_unimed_match",
-            "fuzz_token_set": "match_confidence",
-        }
+    return depara.drop_duplicates(subset=["linha_key"], keep="first")
+
+
+def _global_compra_linha_stats(
+    global_compras_path: Path,
+    *,
+    catalog_path: Path | None = None,
+    side: SideConfig | None = None,
+) -> pd.DataFrame:
+    """Estatísticas de custo por linha clínica Global (R$/unidade L2 quando catálogo disponível)."""
+    from depara.price_sanity import linha_cost_stats
+
+    stats = linha_cost_stats(
+        global_compras_path, catalog_path=catalog_path, side=side
     )
-    alta_depara["unimed_cod_item"] = pd.to_numeric(alta_depara["unimed_cod_item"], errors="coerce")
-    alta_depara = alta_depara.dropna(subset=["unimed_cod_item"])
-    alta_depara["unimed_cod_item"] = alta_depara["unimed_cod_item"].astype(int)
-    alta_depara["match_source"] = "fuzzy_alta"
-    alta_depara["match_model"] = None
+    if _is_snapshot_global(global_compras_path, side=side):
+        raw = _load_global_skus(global_compras_path, side=side)
+        raw["linha_key"] = raw["LINHA_PRODUTO"].str.strip()
+        pa_col = "principio_ativo" if "principio_ativo" in raw.columns else "PRINCIPIO_ATIVO"
+        meta = raw.groupby("linha_key", as_index=False).agg(
+            principio_ativo=(pa_col, "first"),
+            marcas=("MARCA", lambda x: sorted(set(x.dropna()))),
+        )
+        return stats.merge(meta, on="linha_key", how="left")
 
-    return pd.concat([depara, alta_depara], ignore_index=True).drop_duplicates(
-        subset=["linha_key"], keep="first"
-    )
-
-
-def _global_compra_linha_stats(global_compras_path: Path) -> pd.DataFrame:
-    """Estatísticas de CUSTO_ENTRADA por linha clínica Global."""
     raw = pd.read_csv(global_compras_path, encoding="latin-1")
-    raw["DT_ENTRADA"] = pd.to_datetime(raw["DT_ENTRADA"])
     raw["linha_key"] = raw["LINHA_PRODUTO"].str.strip()
-    raw = raw.sort_values("DT_ENTRADA")
-
-    return raw.groupby("linha_key", as_index=False).agg(
-        linha_produto=("LINHA_PRODUTO", "first"),
+    meta = raw.groupby("linha_key", as_index=False).agg(
         principio_ativo=("PRINCIPIO_ATIVO", "first"),
         n_skus=("COD_PRODUTO", "nunique"),
         marcas=("MARCA", lambda x: sorted(set(x.dropna()))),
         n_compras=("CUSTO_ENTRADA", "count"),
-        global_custo_ultimo=("CUSTO_ENTRADA", "last"),
-        global_dt_ultima_compra=("DT_ENTRADA", "last"),
-        global_custo_medio=("CUSTO_ENTRADA", "mean"),
-        global_custo_mediana=("CUSTO_ENTRADA", "median"),
-        global_custo_min=("CUSTO_ENTRADA", "min"),
-        global_custo_max=("CUSTO_ENTRADA", "max"),
     )
+    raw["DT_ENTRADA"] = pd.to_datetime(raw["DT_ENTRADA"])
+    dates = (
+        raw.sort_values("DT_ENTRADA")
+        .groupby("linha_key", as_index=False)
+        .agg(global_dt_ultima_compra=("DT_ENTRADA", "last"))
+    )
+    return stats.merge(meta, on="linha_key").merge(dates, on="linha_key")
 
 
-def _global_compra_sku_stats(global_compras_path: Path) -> pd.DataFrame:
+def _global_compra_sku_stats(
+    global_compras_path: Path,
+    *,
+    side: SideConfig | None = None,
+) -> pd.DataFrame:
+    if _is_snapshot_global(global_compras_path, side=side):
+        raw = _load_global_skus(global_compras_path, side=side)
+        raw["linha_key"] = raw["LINHA_PRODUTO"].str.strip()
+        pa_col = "principio_ativo" if "principio_ativo" in raw.columns else "PRINCIPIO_ATIVO"
+        return (
+            raw.rename(columns={"COD_PRODUTO": "global_cod_produto"})
+            .assign(
+                descricao_produto=raw["DESCRICAO_PRODUTO"],
+                marca=raw["MARCA"],
+                principio_ativo=raw[pa_col],
+                global_custo_ultimo=raw["CUSTOULTENT"],
+                global_custo_medio=raw["CUSTOREAL"],
+                global_custo_mediana=raw["CUSTOREAL"],
+                global_custo_min=raw["CUSTOREAL"],
+                global_custo_max=raw["CUSTOREAL"],
+            )[
+                [
+                    "linha_key",
+                    "LINHA_PRODUTO",
+                    "global_cod_produto",
+                    "descricao_produto",
+                    "marca",
+                    "principio_ativo",
+                    "global_custo_ultimo",
+                    "global_custo_medio",
+                    "global_custo_mediana",
+                    "global_custo_min",
+                    "global_custo_max",
+                    "ESTOQUE_DISPONIVEL",
+                ]
+            ]
+            .rename(columns={"LINHA_PRODUTO": "linha_produto"})
+        )
+
     raw = pd.read_csv(global_compras_path, encoding="latin-1")
     raw["DT_ENTRADA"] = pd.to_datetime(raw["DT_ENTRADA"])
     raw["linha_key"] = raw["LINHA_PRODUTO"].str.strip()
@@ -151,10 +210,15 @@ def build_price_report_linha(
     unimed_catalog_path: Path,
     fase1_path: Path,
     llm_matches_path: Path,
+    *,
+    catalog_path: Path | None = None,
+    side: SideConfig | None = None,
 ) -> pd.DataFrame:
     """Relatório por linha clínica Global vs preço referência Unimed."""
     depara = build_depara(global_compras_path, fase1_path, llm_matches_path)
-    linha = _global_compra_linha_stats(global_compras_path)
+    linha = _global_compra_linha_stats(
+        global_compras_path, catalog_path=catalog_path, side=side
+    )
     unimed_p = _unimed_catalog_prices(unimed_catalog_path)
 
     report = depara.merge(linha, on="linha_key", how="left", suffixes=("", "_linha"))
@@ -162,6 +226,9 @@ def build_price_report_linha(
         report["linha_produto"] = report["linha_produto"].fillna(report["linha_produto_linha"])
         report = report.drop(columns=["linha_produto_linha"])
     report = report.merge(unimed_p, on="unimed_cod_item", how="left")
+    report["global_custo_mediana_norm"] = report["global_custo_mediana"]
+    report["global_custo_ultimo_norm"] = report["global_custo_ultimo"]
+    report["global_custo_medio_norm"] = report["global_custo_medio"]
 
     for col in ("global_custo_ultimo", "global_custo_medio", "global_custo_mediana"):
         report[f"gap_{col}_pct"] = _gap_pct(report[col], report["unimed_vl_medio"])
@@ -209,10 +276,14 @@ def build_price_report_linha(
     enriched = enrich_price_report(report)
     extra = [
         "unimed_vl_por_unidade",
+        "pack_qty_global",
+        "pack_qty_unimed",
+        "global_custo_mediana_norm",
         "economia_potencial_mediana_rs",
         "oportunidade_mensal_rs",
         "risco_mensal_rs",
         "preco_depara_ok",
+        "projecao_financeira_plausivel",
         "review_flags",
     ]
     return enriched[[c for c in list(report.columns) + extra if c in enriched.columns]]
@@ -223,10 +294,12 @@ def build_price_report_sku(
     unimed_catalog_path: Path,
     fase1_path: Path,
     llm_matches_path: Path,
+    *,
+    side: SideConfig | None = None,
 ) -> pd.DataFrame:
     """Detalhe por COD_PRODUTO/marca Global vs referência Unimed."""
     depara = build_depara(global_compras_path, fase1_path, llm_matches_path)
-    sku = _global_compra_sku_stats(global_compras_path)
+    sku = _global_compra_sku_stats(global_compras_path, side=side)
     unimed_p = _unimed_catalog_prices(unimed_catalog_path)
 
     depara_slim = depara[
@@ -278,12 +351,24 @@ def export_price_report(
     fase1_path: Path,
     llm_matches_path: Path,
     output_path: Path,
+    *,
+    catalog_path: Path | None = None,
+    side: SideConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     linha = build_price_report_linha(
-        global_compras_path, unimed_catalog_path, fase1_path, llm_matches_path
+        global_compras_path,
+        unimed_catalog_path,
+        fase1_path,
+        llm_matches_path,
+        catalog_path=catalog_path,
+        side=side,
     )
     sku = build_price_report_sku(
-        global_compras_path, unimed_catalog_path, fase1_path, llm_matches_path
+        global_compras_path,
+        unimed_catalog_path,
+        fase1_path,
+        llm_matches_path,
+        side=side,
     )
 
     from depara.sources import (
@@ -306,8 +391,11 @@ def readiness_summary(
     global_compras_path: Path,
     fase1_path: Path,
     llm_matches_path: Path,
+    *,
+    side: SideConfig | None = None,
 ) -> dict:
-    u = load_global_linhas(str(global_compras_path))
+    template = side.template if side is not None else None
+    u = load_global_linhas(str(global_compras_path), template=template)
     all_linhas = set(u["linha_produto"].str.strip())
 
     fase1 = pd.read_csv(fase1_path)
@@ -316,10 +404,14 @@ def readiness_summary(
 
     llm = pd.read_csv(llm_matches_path)
     llm_linhas = set(llm["linha_produto"].str.strip())
-    alta = set(fase1[fase1["confianca"] == "alta"]["linha_produto"].str.strip())
-    missing = all_linhas - llm_linhas - alta
+    missing = all_linhas - llm_linhas
 
     depara = build_depara(global_compras_path, fase1_path, llm_matches_path)
+    reviewed_match = int((llm["decision"] == "match").sum())
+    if "review_passed" in llm.columns:
+        reviewed_match = int(
+            ((llm["decision"] == "match") & llm["review_passed"].fillna(True)).sum()
+        )
     return {
         "total_linhas_global": len(all_linhas),
         "llm_processadas": len(llm_linhas),
@@ -327,6 +419,6 @@ def readiness_summary(
         "cobertura_pct": round(len(depara) / len(all_linhas) * 100, 1),
         "sem_depara": len(all_linhas) - len(depara),
         "faltando_processar": len(missing),
-        "llm_match": int((llm["decision"] == "match").sum()),
+        "llm_match": reviewed_match,
         "llm_no_match": int((llm["decision"] == "no_match").sum()),
     }

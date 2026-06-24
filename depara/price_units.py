@@ -3,8 +3,26 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from typing import Literal
 
 import pandas as pd
+
+PackSource = Literal["structured", "regex", "default"]
+
+
+@dataclass(frozen=True)
+class PackInfo:
+    pack_qty: int
+    clinical_unit: str | None
+    sale_unit: str | None
+    source: PackSource
+
+
+_STRUCTURED_PACK = re.compile(
+    r"^(?P<sale>CX|PC|KIT|PCT|PACOTE)\s+C/\s*(?P<qty>\d+)\s*(?P<unit>\w+)?",
+    re.I,
+)
 
 _PACK_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"cx\s*c/\s*(\d+)", re.I),
@@ -28,6 +46,24 @@ _UNIT_SINGULAR = frozenset(
         "l",
     }
 )
+
+
+def parse_pack(embalagem: str | None) -> PackInfo | None:
+    """Parse embalagem estruturada Global (ex.: CX C/ 50 AP)."""
+    if not embalagem or not str(embalagem).strip():
+        return None
+    text = str(embalagem).strip()
+    m = _STRUCTURED_PACK.match(text)
+    if m:
+        qty = int(m.group("qty"))
+        if qty > 1:
+            return PackInfo(
+                pack_qty=qty,
+                clinical_unit=(m.group("unit") or "").upper() or None,
+                sale_unit=m.group("sale").upper(),
+                source="structured",
+            )
+    return None
 
 
 def infer_pack_qty(descricao: str, unidade: str | None) -> int:

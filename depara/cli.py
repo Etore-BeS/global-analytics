@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import click
 import pandas as pd
-
 from depara.llm.candidates import LLM_ALL_CONFIDENCA
 from depara.llm.config import DeparaLLMSettings
 from depara.llm.matcher import LLMMatcher
@@ -32,6 +32,38 @@ def cli() -> None:
     """Depara Unimed ↔ Global via LLM (pydantic-ai)."""
 
 
+@cli.command("job")
+@click.option(
+    "--config",
+    "config_path",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="YAML/JSON de job (templates, paths, output_dir)",
+)
+@click.option(
+    "--skip-match",
+    is_flag=True,
+    help="Só gera relatório de preço a partir de matches existentes",
+)
+def job_cmd(config_path: Path, skip_match: bool) -> None:
+    """Pipeline end-to-end: ingest → match → preços → summary.json."""
+    from depara.contract.config_loader import load_job_config
+    from depara.pipeline.run_job import run_job
+
+    config = load_job_config(config_path)
+    if skip_match:
+        config = config.model_copy(
+            update={"match": config.match.model_copy(update={"skip_match": True})}
+        )
+    result = run_job(config)
+    click.echo(f"Job concluído → {result.output_dir}")
+    click.echo(f"  matches:       {result.matches_path}")
+    click.echo(f"  price_report:  {result.price_report_csv}")
+    click.echo(f"  summary:       {result.summary_path}")
+    for k, v in result.readiness.items():
+        click.echo(f"  {k}: {v}")
+
+
 @cli.command("test")
 @click.option("--limit", default=5, show_default=True, help="Número de linhas clínicas")
 @click.option(
@@ -41,26 +73,52 @@ def cli() -> None:
     default=None,
     help="Filtrar por confiança da fase 1 (fuzzy)",
 )
-@click.option("--all", "run_all", is_flag=True, help="LLM em media+baixa+revisar (pula alta)")
+@click.option(
+    "--all",
+    "run_all",
+    is_flag=True,
+    help="Agente em todas as linhas (alta+media+baixa+revisar)",
+)
 @click.option("--no-cache", is_flag=True, help="Ignorar cache SQLite")
+@click.option(
+    "--output",
+    "output_path",
+    default=None,
+    help="CSV de saída (piloto). Default: fase1_llm_matches.csv",
+)
+@click.option(
+    "--no-merge",
+    "no_merge",
+    is_flag=True,
+    help="Não mesclar no CSV principal — só grava --output",
+)
 def test_match(
     limit: int,
     confianca_filter: str | None,
     run_all: bool,
     no_cache: bool,
+    output_path: str | None,
+    no_merge: bool,
 ) -> None:
     """Roda em modo test (TestModel, sem API) para validar pipeline."""
+    if no_merge and not output_path:
+        raise click.ClickException(
+            "Com --no-merge, informe --output (ex: exports/fase1_pilot_test.csv)"
+        )
     cf, ca = _resolve_confidence(confianca_filter=confianca_filter, run_all=run_all, default=None)
     settings = DeparaLLMSettings(mode="test")
+    if output_path:
+        settings = settings.model_copy(update={"output_path": Path(output_path)})
     matcher = LLMMatcher(settings)
-    df = matcher.run_batch(
+    batch = matcher.run_batch(
         limit=limit,
         confianca_filter=cf,
         confianca_all=ca,
         use_cache=not no_cache,
+        merge_into_output=not no_merge,
     )
-    click.echo(f"Processadas {len(df)} linhas → {settings.output_path}")
-    for _, row in df.iterrows():
+    click.echo(f"Processadas {len(batch)} linhas → {settings.output_path}")
+    for _, row in batch.iterrows():
         click.echo(
             f"\n  {row['linha_produto'][:60]}\n"
             f"  → {row['decision']} cod={row['cod_item']} conf={row['confidence']:.2f}\n"
@@ -77,7 +135,12 @@ def test_match(
     default=None,
     show_default="revisar",
 )
-@click.option("--all", "run_all", is_flag=True, help="Estimar media+baixa+revisar (pula alta)")
+@click.option(
+    "--all",
+    "run_all",
+    is_flag=True,
+    help="Estimar todas as linhas (alta+media+baixa+revisar)",
+)
 @click.option("--model", default=None, help="Override DEPARA_MODEL para precificação")
 def estimate_cost(
     limit: int | None,
@@ -137,7 +200,7 @@ def estimate_cost(
         if pd.notna(r.get("best_cod_item"))
     }
 
-    scope = "all (media+baixa+revisar)" if ca else (cf or "revisar")
+    scope = "todas (alta+media+baixa+revisar)" if ca else (cf or "revisar")
 
     if limit is not None:
         unimed = unimed.head(limit)
@@ -236,10 +299,27 @@ def clear_cache() -> None:
     default=None,
     show_default="revisar",
 )
-@click.option("--all", "run_all", is_flag=True, help="LLM em media+baixa+revisar (pula alta)")
+@click.option(
+    "--all",
+    "run_all",
+    is_flag=True,
+    help="Agente em todas as linhas (alta+media+baixa+revisar)",
+)
 @click.option("--model", default=None, help="Override DEPARA_MODEL")
 @click.option("--no-cache", is_flag=True, help="Ignorar cache SQLite")
 @click.option("--order", type=click.Choice(["priority", "alpha"]), default="priority", show_default=True)
+@click.option(
+    "--output",
+    "output_path",
+    default=None,
+    help="CSV de saída (piloto). Default: fase1_llm_matches.csv",
+)
+@click.option(
+    "--no-merge",
+    "no_merge",
+    is_flag=True,
+    help="Não mesclar no CSV principal — só grava --output",
+)
 def run_match(
     limit: int | None,
     confianca_filter: str | None,
@@ -247,24 +327,31 @@ def run_match(
     model: str | None,
     no_cache: bool,
     order: str,
+    output_path: str | None,
+    no_merge: bool,
 ) -> None:
     """Roda match LLM em produção (requer API key configurada)."""
+    if no_merge and not output_path:
+        raise click.ClickException(
+            "Com --no-merge, informe --output (ex: exports/fase1_pilot.csv)"
+        )
     cf, ca = _resolve_confidence(confianca_filter=confianca_filter, run_all=run_all)
     settings = DeparaLLMSettings(mode="prod")
     if model:
         settings = settings.model_copy(update={"model": model})
+    if output_path:
+        settings = settings.model_copy(update={"output_path": Path(output_path)})
     matcher = LLMMatcher(settings)
-    df = matcher.run_batch(
+    batch = matcher.run_batch(
         limit=limit,
         confianca_filter=cf,
         confianca_all=ca,
         use_cache=not no_cache,
         order=order,
+        merge_into_output=not no_merge,
     )
-    batch_n = limit if limit is not None else len(df)
-    batch = df.tail(batch_n)
     matched = (batch["decision"] == "match").sum()
-    scope = "all (media+baixa+revisar)" if ca else (cf or "revisar")
+    scope = "todas (alta+media+baixa+revisar)" if ca else (cf or "revisar")
     click.echo(
         f"Concluído [{scope}]: {len(batch)} linhas neste batch | {matched} matches | "
         f"export → {settings.output_path}"
@@ -301,7 +388,13 @@ def match_one(linha_produto: str, model: str | None) -> None:
     show_default=True,
     help="Path base (gera .csv, .xlsx e fase2_price_sku.csv)",
 )
-def price_report(output: str) -> None:
+@click.option(
+    "--llm-matches",
+    "llm_matches_path",
+    default=None,
+    help="CSV de matches (piloto). Default: fase1_llm_matches.csv",
+)
+def price_report(output: str, llm_matches_path: str | None) -> None:
     """Fase 2: comparativo preço Global (distribuidor) vs Unimed (compras)."""
     from pathlib import Path
 
@@ -310,10 +403,11 @@ def price_report(output: str) -> None:
 
     settings = DeparaLLMSettings()
     base = settings.output_path.parent
+    matches_path = Path(llm_matches_path) if llm_matches_path else settings.output_path
     summary = readiness_summary(
         settings.global_compras_path,
         base / "fase1_comparison.csv",
-        settings.output_path,
+        matches_path,
     )
 
     click.echo("=== Prontidão fase 2 ===")
@@ -324,24 +418,26 @@ def price_report(output: str) -> None:
 
     if summary["faltando_processar"] > 0:
         click.echo(
-            f"\n⚠ {summary['faltando_processar']} linha(s) sem LLM nem fuzzy alta — "
-            "seguindo com cobertura parcial."
+            f"\n⚠ {summary['faltando_processar']} linha(s) sem passar pelo agente — "
+            "use `depara run --all` para cobertura completa."
         )
 
     out = Path(output)
+    catalog = settings.global_catalog_path
     linha, sku = export_price_report(
         settings.global_compras_path,
         settings.unimed_catalogo_path,
         base / "fase1_comparison.csv",
-        settings.output_path,
+        matches_path,
         out,
+        catalog_path=catalog if catalog and catalog.exists() else None,
     )
 
     global_mais_caro = (linha["gap_global_custo_ultimo_pct"] > 0).sum()
     global_mais_barato = (linha["gap_global_custo_ultimo_pct"] < 0).sum()
     med_gap = linha["gap_global_custo_ultimo_pct"].median()
 
-    click.echo(f"\n=== Relatório gerado ===")
+    click.echo("\n=== Relatório gerado ===")
     click.echo(f"  Linhas Global (dist.) com depara Unimed: {len(linha)}")
     click.echo(f"  SKUs/marcas Global detalhados:          {len(sku)}")
     click.echo(f"  Global > Unimed (último):               {global_mais_caro}")
@@ -414,12 +510,14 @@ def reanalyze_prices(
         from depara.report_html import generate_html_report
 
         out = base / "fase2_price_report"
+        catalog = settings.global_catalog_path
         export_price_report(
             settings.global_compras_path,
             settings.unimed_catalogo_path,
             base / "fase1_comparison.csv",
             settings.output_path,
             out,
+            catalog_path=catalog if catalog and catalog.exists() else None,
         )
         generate_html_report(out.with_suffix(".csv"), out.with_suffix(".html"))
         click.echo("  fase2_price_report.csv/.html regenerados")

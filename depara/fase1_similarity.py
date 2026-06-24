@@ -36,19 +36,36 @@ def normalize_text(text: object, *, aggressive: bool = True) -> str:
         "solução injetavel": "solucao injetavel",
         "solucao injetavel": "sol inj",
         "sol injetavel": "sol inj",
+        "sol inj": "sol inj",
         "solucao oral": "sol oral",
+        "sol oral": "sol oral",
         "comprimido": "com",
         "comprimidos": "com",
+        "comprimido revestido": "com rev",
+        "cpr rev": "com rev",
         "capsula": "cap",
         "cápsula": "cap",
         "xarope": "xpe",
         "frasco ampola": "fa",
+        "frasco-ampola": "fa",
         "ampola": "amp",
         "seringa preenchida": "ser preenc",
+        "ser preenchida": "ser preenc",
         "caneta": "can",
         "po liofilizado": "po liof",
+        "po liof": "po liof",
+        "granulado": "gran",
+        "suspensao": "susp",
+        "suspensão": "susp",
+        "injetavel": "inj",
+        "injetável": "inj",
+        "intravenoso": "iv",
+        "intravenosa": "iv",
+        "via oral": "vo",
+        " uso oral": " vo",
         "mg/ml": "mg ml",
         "mcg/ml": "mcg ml",
+        "ui/ml": "ui ml",
     }
     for old, new in replacements.items():
         s = s.replace(old, new)
@@ -57,8 +74,29 @@ def normalize_text(text: object, *, aggressive: bool = True) -> str:
     return s.strip()
 
 
-def load_global_linhas(path: str) -> pd.DataFrame:
-    """Linhas clínicas e SKUs a partir do CSV Global (distribuidor)."""
+def principio_from_linha(linha: str) -> str:
+    s = linha.strip()
+    return s.split("(", 1)[0].strip() if "(" in s else s
+
+
+def detect_global_source_mode(path: str) -> Literal["global_purchases", "global_cost_stock"]:
+    headers = pd.read_csv(path, encoding="latin-1", nrows=0).columns
+    return "global_cost_stock" if "CUSTOREAL" in headers else "global_purchases"
+
+
+def load_global_linhas(path: str, *, template: str | None = None) -> pd.DataFrame:
+    """Linhas clínicas e SKUs a partir do CSV Global (distribuidor ou custo/estoque)."""
+    mode = template or detect_global_source_mode(path)
+    if mode == "global_cost_stock":
+        from pathlib import Path
+
+        from depara.contract.ingest import ingest_side_a_linhas
+        from depara.contract.models import SideConfig
+
+        return ingest_side_a_linhas(
+            SideConfig(path=Path(path), template="global_cost_stock")
+        )
+
     raw = pd.read_csv(path, encoding="latin-1")
     produtos = raw.drop_duplicates(subset=["COD_PRODUTO"])
     linhas = (
@@ -182,7 +220,25 @@ def match_tfidf(unimed: pd.DataFrame, global_items: pd.DataFrame) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
+def ensure_spacy_model(name: str = "pt_core_news_md") -> None:
+    """Garante que o modelo spaCy está instalado (baixa se necessário)."""
+    import subprocess
+    import sys
+
+    import spacy
+
+    try:
+        spacy.load(name, disable=["ner", "parser"])
+    except OSError:
+        print(f"Modelo spaCy {name} não encontrado — baixando…")
+        subprocess.run(
+            [sys.executable, "-m", "spacy", "download", name],
+            check=True,
+        )
+
+
 def match_spacy(unimed: pd.DataFrame, global_items: pd.DataFrame) -> pd.DataFrame:
+    ensure_spacy_model()
     nlp = spacy.load("pt_core_news_md", disable=["ner", "parser"])
     unimed_docs = list(nlp.pipe(unimed["texto_spacy"], batch_size=256))
     global_docs = list(nlp.pipe(global_items["texto_spacy"], batch_size=256))
@@ -230,19 +286,30 @@ def _spacy_token_jaccard(doc_a: spacy.tokens.Doc, doc_b: spacy.tokens.Doc) -> fl
 
 
 def run_all_methods(
-    global_distribuidor_path: str,
-    unimed_catalogo_path: str,
+    global_distribuidor_path: str | None = None,
+    unimed_catalogo_path: str | None = None,
+    *,
+    global_linhas: pd.DataFrame | None = None,
+    unimed_items: pd.DataFrame | None = None,
+    skip_spacy: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    global_linhas = load_global_linhas(global_distribuidor_path)
-    unimed_items = load_unimed_catalog_items(unimed_catalogo_path)
+    if global_linhas is None:
+        if global_distribuidor_path is None:
+            raise ValueError("global_distribuidor_path ou global_linhas é obrigatório")
+        global_linhas = load_global_linhas(global_distribuidor_path)
+    if unimed_items is None:
+        if unimed_catalogo_path is None:
+            raise ValueError("unimed_catalogo_path ou unimed_items é obrigatório")
+        unimed_items = load_unimed_catalog_items(unimed_catalogo_path)
 
     method_frames = [
         match_thefuzz(global_linhas, unimed_items, "fuzz_token_set"),
         match_thefuzz(global_linhas, unimed_items, "fuzz_token_sort"),
         match_thefuzz(global_linhas, unimed_items, "fuzz_wratio"),
         match_tfidf(global_linhas, unimed_items),
-        match_spacy(global_linhas, unimed_items),
     ]
+    if not skip_spacy:
+        method_frames.append(match_spacy(global_linhas, unimed_items))
 
     long_df = pd.concat(method_frames, ignore_index=True)
 
@@ -286,10 +353,15 @@ def _assign_confidence(pivot: pd.DataFrame, score_cols: list[str]) -> pd.Series:
         codes = [row[c] for c in cod_cols]
         n_unique = len(set(codes))
         primary = row.get("fuzz_token_set", 0)
-        spacy = row.get("spacy", 0)
         if n_unique == 1 and primary >= 0.8:
             return "alta"
-        if row["cod_item_fuzz_token_set"] == row["cod_item_spacy"] and primary >= 0.75:
+        spacy_cod = row.get("cod_item_spacy")
+        if (
+            spacy_cod is not None
+            and pd.notna(spacy_cod)
+            and row.get("cod_item_fuzz_token_set") == spacy_cod
+            and primary >= 0.75
+        ):
             return "alta"
         if n_unique <= 2 and row["score_mean"] >= 0.75:
             return "media"

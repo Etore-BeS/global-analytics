@@ -27,6 +27,18 @@ from depara.ui.env_settings import (
     load_env_defaults,
     merge_env_overrides,
 )
+from depara.ui.job_progress import (
+    MAX_JOB_POLLS,
+    MAX_WAIT_MINUTES,
+    POLL_INTERVAL_SEC,
+    elapsed_seconds,
+    estimate_caption,
+    eta_seconds,
+    format_duration,
+    progress_detail,
+    progress_label,
+    progress_percent,
+)
 from depara.ui.mapping_help import (
     LEVEL_BADGE,
     REFERENCE_SECTIONS,
@@ -51,8 +63,6 @@ from depara.ui.report_view import (
 
 STEP_LABELS = ["Guia", "Arquivos", "Mapeamento", "Validar", "Resultado"]
 DEFAULT_API_URL = "http://127.0.0.1:8000"
-MAX_JOB_POLLS = 300
-POLL_INTERVAL_SEC = 2.0
 
 
 def _init_session() -> None:
@@ -593,6 +603,15 @@ def _step_validate() -> None:
             _show_validation_errors(result)
 
     run_disabled = not st.session_state.get("validation_ok") or not client.health()
+    if isinstance(result, ValidateResponse):
+        st.info(
+            estimate_caption(
+                regenerate_fase1=st.session_state.get("regenerate_fase1", False),
+                skip_spacy=st.session_state.get("skip_spacy", True),
+                run_llm=st.session_state.get("run_llm", False),
+                subject_rows=result.subject.row_count,
+            )
+        )
     if st.button("Executar análise →", type="primary", disabled=run_disabled):
         st.session_state["step"] = 4
         st.session_state["job_id"] = None
@@ -614,8 +633,23 @@ def _poll_job(client: DeparaApiClient, job_id: str) -> None:
     st.session_state["poll_count"] = poll_count
 
     job = client.get_job(job_id)
-    progress = f" — {job.progress}" if job.progress else ""
-    st.info(f"Status: **{job.status}**{progress} (consulta {poll_count}/{MAX_JOB_POLLS})")
+    pct = progress_percent(job)
+    label = progress_label(job)
+    detail = progress_detail(job)
+
+    st.progress(pct / 100.0, text=f"{pct}% — {label}")
+
+    elapsed = elapsed_seconds(job.created_at, time.time())
+    eta = eta_seconds(elapsed, pct)
+    metrics: list[str] = []
+    if elapsed is not None:
+        metrics.append(f"Decorrido: **{format_duration(elapsed)}**")
+    if eta is not None:
+        metrics.append(f"Restante estimado: **~{format_duration(eta)}**")
+    if detail:
+        metrics.append(detail)
+    if metrics:
+        st.caption(" · ".join(metrics))
 
     if job.status in ("completed", "failed"):
         st.session_state["job_result"] = job
@@ -627,8 +661,8 @@ def _poll_job(client: DeparaApiClient, job_id: str) -> None:
     if poll_count >= MAX_JOB_POLLS:
         st.session_state["job_poll_exhausted"] = True
         st.warning(
-            "Tempo esgotado aguardando o job. "
-            "Se a API reiniciou com `--reload`, o worker morreu — use **Reexecutar**."
+            f"Tempo máximo de acompanhamento ({MAX_WAIT_MINUTES} min) esgotado. "
+            "O job pode ainda estar rodando na API — recarregue ou use **Reexecutar**."
         )
         return
 
@@ -836,7 +870,18 @@ def _step_results() -> None:
         job_result = _ensure_job_result(client, job_id)
 
     if job_result.status not in ("completed", "failed"):
+        estimate = estimate_caption(
+            regenerate_fase1=st.session_state.get("regenerate_fase1", False),
+            skip_spacy=st.session_state.get("skip_spacy", True),
+            run_llm=st.session_state.get("run_llm", False),
+            subject_rows=(
+                st.session_state.get("validation_result").subject.row_count
+                if isinstance(st.session_state.get("validation_result"), ValidateResponse)
+                else None
+            ),
+        )
         with st.status("Processando análise…", expanded=True):
+            st.caption(estimate)
             _poll_job(client, job_id)
         return
 

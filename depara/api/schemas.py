@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from depara.api.progress import JobProgressInfo, coerce_progress
 from depara.contract.models import (
     Fase1Config,
     Granularity,
@@ -12,7 +13,7 @@ from depara.contract.models import (
     SideConfig,
     TemplateId,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SideRequest(BaseModel):
@@ -54,10 +55,15 @@ class ValidateResponse(BaseModel):
 class JobStatusResponse(BaseModel):
     job_id: str
     status: Literal["queued", "running", "completed", "failed"]
-    progress: str | None = None
+    progress: JobProgressInfo | None = None
     error: str | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
     created_at: str | None = None
+
+    @field_validator("progress", mode="before")
+    @classmethod
+    def _coerce_progress(cls, raw: object) -> JobProgressInfo | None:
+        return coerce_progress(raw)
 
 
 def side_config_from_request(req: SideRequest, path) -> SideConfig:

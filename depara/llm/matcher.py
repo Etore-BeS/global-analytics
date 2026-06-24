@@ -436,6 +436,7 @@ class LLMMatcher:
         order: str = "priority",
         merge_into_output: bool = True,
         _preselected: pd.DataFrame | None = None,
+        on_progress: Callable[[int, int, MatchRecord], None] | None = None,
     ) -> pd.DataFrame:
         linhas = (
             _preselected
@@ -450,9 +451,16 @@ class LLMMatcher:
 
         items = [self._row_to_input(row) for _, row in linhas.iterrows()]
         total = len(items)
-        progress = self._log_progress(total)
+        log_cb = self._log_progress(total)
+
+        def _combined(done: int, tot: int, record: MatchRecord) -> None:
+            log_cb(done, tot, record)
+            if on_progress is not None:
+                on_progress(done, tot, record)
+
+        progress_cb = _combined if on_progress is not None else log_cb
         records = asyncio.run(
-            self.match_many(items, use_cache=use_cache, on_progress=progress)
+            self.match_many(items, use_cache=use_cache, on_progress=progress_cb)
         )
         batch_df = pd.DataFrame([r.model_dump() for r in records])
         batch_df = self._enrich_with_prices(batch_df)

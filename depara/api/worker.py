@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import shutil
 import threading
+import time
 
 from depara.api.env_overrides import apply_env_overrides
+from depara.api.schemas import JobProgressInfo
 from depara.api.storage import JobRecord, JobStatus, update_job
+from depara.pipeline.progress import JobProgress
 from depara.pipeline.run_job import run_job
 
 logger = logging.getLogger(__name__)
@@ -36,19 +39,46 @@ def run_job_async(record: JobRecord) -> None:
     thread.start()
 
 
+def _progress_callback(record: JobRecord):
+    last_save = 0.0
+    last_pct = -1
+    last_phase = ""
+
+    def _cb(progress: JobProgress) -> None:
+        nonlocal last_save, last_pct, last_phase
+        now = time.monotonic()
+        phase_changed = progress.phase != last_phase
+        pct_jump = abs(progress.percent - last_pct) >= 2
+        if not (phase_changed or pct_jump or now - last_save >= 2.0):
+            return
+        record.progress = JobProgressInfo.model_validate(progress.to_dict())
+        update_job(record)
+        last_save = now
+        last_pct = progress.percent
+        last_phase = progress.phase
+
+    return _cb
+
+
 def _execute_job(record: JobRecord) -> None:
     record.status = JobStatus.RUNNING
-    record.progress = "starting"
+    record.progress = JobProgressInfo(
+        phase="starting",
+        label="Iniciando pipeline…",
+        percent=0,
+    )
     update_job(record)
 
     try:
-        record.progress = "pipeline"
-        update_job(record)
         with apply_env_overrides(record.config.env_overrides):
-            result = run_job(record.config)
+            result = run_job(record.config, on_progress=_progress_callback(record))
         _finalize_artifacts(record, result)
         record.status = JobStatus.COMPLETED
-        record.progress = "done"
+        record.progress = JobProgressInfo(
+            phase="done",
+            label="Concluído",
+            percent=100,
+        )
         record.error = None
     except Exception as exc:  # noqa: BLE001
         logger.exception("Job %s falhou", record.job_id)

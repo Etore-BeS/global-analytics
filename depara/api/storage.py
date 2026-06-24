@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from depara.api.progress import JobProgressInfo, coerce_progress
 from depara.api.schemas import JobCreateConfig, side_config_from_request
 from depara.contract.models import JobConfig
 
@@ -35,7 +36,7 @@ class JobRecord:
     job_dir: Path
     config: JobConfig
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    progress: str | None = None
+    progress: JobProgressInfo | None = None
     error: str | None = None
 
     def status_path(self) -> Path:
@@ -58,7 +59,7 @@ class JobRecord:
         return {
             "job_id": self.job_id,
             "status": self.status.value,
-            "progress": self.progress,
+            "progress": self.progress.model_dump() if self.progress else None,
             "error": self.error,
             "artifacts": artifacts,
             "created_at": self.created_at,
@@ -145,6 +146,10 @@ def create_job(
     return record
 
 
+def _parse_progress(raw) -> JobProgressInfo | None:
+    return coerce_progress(raw)
+
+
 def load_job(job_id: str) -> JobRecord | None:
     job_dir = JOBS_ROOT / job_id
     status_path = job_dir / "status.json"
@@ -159,7 +164,7 @@ def load_job(job_id: str) -> JobRecord | None:
         job_dir=job_dir,
         config=config,
         created_at=status_data.get("created_at", ""),
-        progress=status_data.get("progress"),
+        progress=_parse_progress(status_data.get("progress")),
         error=status_data.get("error"),
     )
 
@@ -212,6 +217,12 @@ def list_jobs(limit: int = 20) -> list[dict]:
             data = json.loads(status_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        rows.append(data)
+        prog = coerce_progress(data.get("progress"))
+        rows.append(
+            {
+                **data,
+                "progress": prog.model_dump() if prog else None,
+            }
+        )
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return rows[:limit]

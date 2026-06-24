@@ -27,7 +27,7 @@ make up
 ```
 
 Abre http://127.0.0.1:8501 (Streamlit) e http://127.0.0.1:8000/docs (API).  
-Parar: `make down` · Status: `make status` · Logs: `make logs`
+Parar tudo: `make down` · Só reiniciar UI (API continua): `make restart-ui` · Status: `make status`
 
 Ou manualmente em dois terminais:
 

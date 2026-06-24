@@ -147,7 +147,7 @@ def test_job_skip_match(client: TestClient, tmp_path: Path, monkeypatch) -> None
 
 
 def test_mark_orphan_jobs_failed(tmp_path: Path, monkeypatch) -> None:
-    from depara.api.schemas import JobCreateConfig, SideRequest
+    from depara.api.schemas import JobCreateConfig, JobProgressInfo, SideRequest
     from depara.api.storage import STALE_JOB_ERROR, JobStatus, create_job, mark_orphan_jobs_failed
 
     jobs_root = tmp_path / "jobs"
@@ -158,7 +158,11 @@ def test_mark_orphan_jobs_failed(tmp_path: Path, monkeypatch) -> None:
     )
     record = create_job(cfg, COST_STOCK, UNIMED)
     record.status = JobStatus.RUNNING
-    record.progress = "pipeline"
+    record.progress = JobProgressInfo(
+        phase="fase1",
+        label="Similaridade…",
+        percent=10,
+    )
     record.save_status()
 
     count = mark_orphan_jobs_failed()

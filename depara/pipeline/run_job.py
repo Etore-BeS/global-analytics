@@ -14,6 +14,7 @@ from depara.fase2_prices import export_price_report, readiness_summary
 from depara.llm.config import DeparaLLMSettings
 from depara.llm.matcher import LLMMatcher
 from depara.pipeline.fase1 import regenerate_fase1
+from depara.pipeline.progress import ProgressCallback, ProgressReporter, build_phase_plan
 from depara.pipeline.summary import build_summary, write_summary
 from depara.report_html import generate_html_report
 
@@ -59,18 +60,30 @@ def _settings_from_config(config: JobConfig, paths: dict[str, Path]) -> DeparaLL
     return DeparaLLMSettings(mode="prod").model_copy(update=updates)
 
 
-def run_job(config: JobConfig) -> JobResult:
+def run_job(config: JobConfig, *, on_progress: ProgressCallback | None = None) -> JobResult:
     paths = apply_job_paths(config)
     settings = _settings_from_config(config, paths)
     settings.ensure_dirs()
 
+    reporter = ProgressReporter(
+        build_phase_plan(
+            regenerate_fase1=config.fase1.regenerate,
+            skip_spacy=config.fase1.skip_spacy,
+            run_llm=not config.match.skip_match,
+        ),
+        on_progress,
+    )
+    reporter.phase("starting")
+
     fase1_path = paths["fase1_path"]
     if config.fase1.regenerate:
+        reporter.phase("fase1")
         regenerate_fase1(
             config,
             fase1_path,
             matches_long_path=paths["output_dir"] / "fase1_matches_long.csv",
         )
+        reporter.phase_done("fase1")
     elif not fase1_path.exists():
         default_fase1 = Path("data/depara-unimed/fase1_comparison.csv")
         if default_fase1.exists():
@@ -95,9 +108,14 @@ def run_job(config: JobConfig) -> JobResult:
             n,
             settings.model,
         )
+        reporter.phase("match_llm", detail=f"0/{n} linhas" if n else None)
         if n == 0:
             logger.info("Nenhuma linha pendente — pulando match.")
         else:
+
+            def _llm_progress(done: int, total: int, _record) -> None:
+                reporter.llm(done, total)
+
             matcher.run_batch(
                 limit=config.match.limit,
                 confianca_filter=config.match.confianca_filter,
@@ -105,11 +123,14 @@ def run_job(config: JobConfig) -> JobResult:
                 use_cache=config.match.use_cache,
                 merge_into_output=True,
                 _preselected=pending,
+                on_progress=_llm_progress,
             )
+        reporter.phase_done("match_llm")
         logger.info("Match concluído — gerando relatório de preços…")
 
     ensure_matches_file(paths["matches_path"])
 
+    reporter.phase("price_report")
     catalog = (
         None
         if config.side_a.template == "global_cost_stock"
@@ -125,6 +146,9 @@ def run_job(config: JobConfig) -> JobResult:
         side=config.side_a,
     )
 
+    reporter.phase_done("price_report")
+
+    reporter.phase("summary")
     html_path = paths["price_report_base"].with_suffix(".html")
     generate_html_report(
         paths["price_report_base"].with_suffix(".csv"),
@@ -146,6 +170,7 @@ def run_job(config: JobConfig) -> JobResult:
         readiness=readiness,
     )
     summary_path = write_summary(paths["output_dir"] / "summary.json", summary)
+    reporter.phase_done("summary")
 
     return JobResult(
         output_dir=paths["output_dir"],

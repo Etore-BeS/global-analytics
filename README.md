@@ -16,7 +16,20 @@ O foco comercial é identificar **oportunidades** (custo abaixo do benchmark) e 
 
 ### Streamlit + API (recomendado)
 
-Dois terminais:
+**Um comando** (API + wizard, aguarda health check):
+
+```bash
+# bash / fish — primeira vez
+make setup
+
+# bash / fish — subir tudo
+make up
+```
+
+Abre http://127.0.0.1:8501 (Streamlit) e http://127.0.0.1:8000/docs (API).  
+Parar: `make down` · Status: `make status` · Logs: `make logs`
+
+Ou manualmente em dois terminais:
 
 ```bash
 # bash / fish — terminal 1: API (evite --reload durante jobs longos)
@@ -201,20 +214,16 @@ Requisitos: **Python ≥ 3.13**, [uv](https://github.com/astral-sh/uv).
 ```bash
 # bash
 cd global-analytics
-uv sync
-uv run python -m spacy download pt_core_news_md
-cp .env.example .env
-# Edite .env: OPENAI_API_KEY, DEPARA_MODEL, etc.
+make setup
 ```
 
 ```fish
 # fish
 cd global-analytics
-uv sync
-uv run python -m spacy download pt_core_news_md
-cp .env.example .env
-# Edite .env: OPENAI_API_KEY, DEPARA_MODEL, etc.
+make setup
 ```
+
+`make setup` roda `uv sync`, baixa o modelo spaCy e copia `.env.example` → `.env` se ainda não existir.
 
 ---
 
@@ -304,8 +313,8 @@ uv run ruff check depara tests
 # bash / fish — testes
 uv run pytest tests/ -q
 
-# bash / fish — compilar
-uv run python -m compileall -q depara
+# bash / fish — smoke do stack local (API + Streamlit)
+make smoke
 ```
 
 ---
